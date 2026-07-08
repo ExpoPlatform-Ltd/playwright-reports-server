@@ -32,8 +32,9 @@ export class Lifecycle {
 
     try {
       if (env.USE_SERVER_CACHE) {
-        await Promise.all([configCache.init(), reportCache.init(), resultCache.init()]);
-        console.log('[lifecycle] Caches initialized successfully');
+        await Promise.all([configCache.init(), reportCache.init()]);
+        console.log('[lifecycle] Report/config caches ready; loading result cache in background');
+        void resultCache.init();
       }
 
       if (!cronService.initialized && !isBuildStage) {
@@ -51,6 +52,10 @@ export class Lifecycle {
 
   public isInitialized(): boolean {
     return this.initialized;
+  }
+
+  public isInitializing(): boolean {
+    return !!this.initPromise && !this.initialized;
   }
 }
 

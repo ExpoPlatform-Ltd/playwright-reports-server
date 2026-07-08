@@ -271,7 +271,9 @@ export async function readReports(input?: ReadReportsInput): Promise<ReadReports
       const id = file.id;
       const reportPath = file.reportDir;
       const projectName = file.project;
-      const sizeBytes = await getFolderSize.loose(reportPath);
+      const sizeBytes = input?.lightweight
+        ? 0
+        : await getFolderSize.loose(reportPath);
       const size = bytesToString(sizeBytes);
 
       const metadata = await readOrParseReportMetadata(id, projectName);

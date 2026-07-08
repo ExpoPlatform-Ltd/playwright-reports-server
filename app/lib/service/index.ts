@@ -38,11 +38,27 @@ class Service {
     return Service.instance;
   }
 
+  private async ensureInitialized(): Promise<void> {
+    if (lifecycle.isInitializing()) {
+      return;
+    }
+
+    if (!lifecycle.isInitialized()) {
+      await lifecycle.initialize();
+      return;
+    }
+
+    if (env.USE_SERVER_CACHE && !reportCache.initialized) {
+      await reportCache.init();
+    }
+  }
+
   private shouldUseServerCache(): boolean {
     return env.USE_SERVER_CACHE && lifecycle.isInitialized();
   }
 
   public async getReports(input?: ReadReportsInput) {
+    await this.ensureInitialized();
     console.log(`[service] getReports`);
     const cached = this.shouldUseServerCache() && reportCache.initialized ? reportCache.getAll() : [];
 
@@ -117,6 +133,7 @@ class Service {
   }
 
   public async getReport(id: string): Promise<ReportHistory> {
+    await this.ensureInitialized();
     console.log(`[service] getReport ${id}`);
     const cached = this.shouldUseServerCache() && reportCache.initialized ? reportCache.getByID(id) : undefined;
 
@@ -188,6 +205,7 @@ class Service {
     resultsIds: string[],
     metadata?: ReportMetadata,
   ): Promise<{ reportId: string; reportUrl: string; metadata: ReportMetadata }> {
+    await this.ensureInitialized();
     const version = isValidPlaywrightVersion(metadata?.playwrightVersion)
       ? metadata?.playwrightVersion
       : await this.findLatestPlaywrightVersion(resultsIds);
@@ -207,6 +225,7 @@ class Service {
   }
 
   public async deleteReports(reportIDs: string[]) {
+    await this.ensureInitialized();
     const { error } = await withError(storage.deleteReports(reportIDs));
 
     if (error) {
@@ -217,6 +236,7 @@ class Service {
   }
 
   public async getReportsProjects(): Promise<string[]> {
+    await this.ensureInitialized();
     const { reports } = await this.getReports();
     const projects = getUniqueProjectsList(reports);
 
@@ -224,6 +244,7 @@ class Service {
   }
 
   public async getResults(input?: ReadResultsInput): Promise<ReadResultsOutput> {
+    await this.ensureInitialized();
     console.log(`[results service] getResults`);
     const cached = this.shouldUseServerCache() && resultCache.initialized ? resultCache.getAll() : [];
 
@@ -304,6 +325,7 @@ class Service {
   }
 
   public async deleteResults(resultIDs: string[]): Promise<void> {
+    await this.ensureInitialized();
     const { error } = await withError(storage.deleteResults(resultIDs));
 
     if (error) {
@@ -314,6 +336,7 @@ class Service {
   }
 
   public async getPresignedUrl(fileName: string): Promise<string | undefined> {
+    await this.ensureInitialized();
     console.log(`[service] getPresignedUrl for ${fileName}`);
 
     if (env.DATA_STORAGE !== 's3') {
@@ -336,6 +359,7 @@ class Service {
   }
 
   public async saveResult(filename: string, stream: PassThrough, presignedUrl?: string, contentLength?: string) {
+    await this.ensureInitialized();
     if (!presignedUrl) {
       console.log(`[service] saving result`);
 
@@ -367,6 +391,7 @@ class Service {
   }
 
   public async saveResultDetails(resultID: string, resultDetails: ResultDetails, size: number) {
+    await this.ensureInitialized();
     const result = await storage.saveResultDetails(resultID, resultDetails, size);
 
     resultCache.onCreated(result);
@@ -375,6 +400,7 @@ class Service {
   }
 
   public async getResultsProjects(): Promise<string[]> {
+    await this.ensureInitialized();
     const { results } = await this.getResults();
     const projects = getUniqueProjectsList(results);
 
@@ -384,6 +410,7 @@ class Service {
   }
 
   public async getResultsTags(project?: string): Promise<string[]> {
+    await this.ensureInitialized();
     const { results } = await this.getResults(project ? { project } : undefined);
 
     const notMetadataKeys = ['resultID', 'title', 'createdAt', 'size', 'sizeBytes', 'project'];
@@ -401,8 +428,9 @@ class Service {
   }
 
   public async getServerInfo(): Promise<ServerDataInfo> {
+    await this.ensureInitialized();
     console.log(`[service] getServerInfo`);
-    const canCalculateFromCache = this.shouldUseServerCache() && reportCache.initialized && resultCache.initialized;
+    const canCalculateFromCache = this.shouldUseServerCache() && reportCache.initialized;
 
     if (!canCalculateFromCache) {
       return await storage.getServerDataInfo();
@@ -415,7 +443,9 @@ class Service {
       entity.reduce((total, item) => total + item.sizeBytes, 0);
 
     const reportsFolderSize = getTotalSizeBytes(reports);
-    const resultsFolderSize = getTotalSizeBytes(results);
+    const resultsFolderSize = resultCache.initialized
+      ? getTotalSizeBytes(results)
+      : 0;
     const dataFolderSize = reportsFolderSize + resultsFolderSize;
 
     return {
@@ -428,6 +458,7 @@ class Service {
   }
 
   public async getConfig() {
+    await this.ensureInitialized();
     const cached = this.shouldUseServerCache() && configCache.initialized ? configCache.config : undefined;
 
     if (cached) {
@@ -444,6 +475,7 @@ class Service {
   }
 
   public async updateConfig(config: Partial<SiteWhiteLabelConfig>) {
+    await this.ensureInitialized();
     console.log(`[service] updateConfig`, config);
     const { result, error } = await storage.saveConfigFile(config);
 

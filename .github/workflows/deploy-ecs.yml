@@ -1,0 +1,69 @@
+name: Deploy to ECS (non-prod)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: eu-west-1
+  IMAGE_TAG: "5.10.0-perf3.2"
+  ECR_REPOSITORY: playwright-reports-server
+  ECS_CLUSTER: playwright-reports-server-cluster
+  ECS_SERVICE: playwright-reports-server
+  APP_URL: https://playwright-reports.eu-west-1.ep-non-production.expoplatform.net
+  AWS_ACCOUNT_ID: "933156343580"
+
+jobs:
+  deploy:
+    name: Deploy Playwright Reports Server (DEV)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify AWS account
+        run: |
+          set -euo pipefail
+          ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          if [ "${ACCOUNT}" != "${AWS_ACCOUNT_ID}" ]; then
+            echo "FATAL: expected AWS account ${AWS_ACCOUNT_ID} but OIDC resolved to ${ACCOUNT}"
+            exit 1
+          fi
+
+      - name: Build, push, deploy
+        env:
+          ECR_REGISTRY: ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+          IMAGE_URI: ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+          SCRIPTS: ${{ github.workspace }}/deploy/scripts
+        run: |
+          set -euo pipefail
+          chmod +x "${SCRIPTS}"/*.sh
+
+          PREVIOUS_TD=$(aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" --region "$AWS_REGION" \
+            --query 'services[0].taskDefinition' --output text)
+
+          aws ecr get-login-password --region "$AWS_REGION" | \
+            docker login --username AWS --password-stdin "$ECR_REGISTRY"
+          docker build --platform linux/amd64 -t "$IMAGE_URI" .
+          docker push "$IMAGE_URI"
+
+          export IMAGE_URI ECS_CLUSTER ECS_SERVICE AWS_REGION APP_URL
+          "${SCRIPTS}/ecs-deploy-image.sh"
+
+          if ! "${SCRIPTS}/smoke-test.sh"; then
+            export TASK_DEFINITION_ARN="$PREVIOUS_TD"
+            "${SCRIPTS}/ecs-rollback-service.sh"
+            "${SCRIPTS}/smoke-test.sh"
+            exit 1
+          fi

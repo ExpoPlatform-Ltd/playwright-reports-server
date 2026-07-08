@@ -3,19 +3,22 @@ import { env } from '@/app/config/env';
 import { SiteWhiteLabelConfig } from '@/app/types';
 import { defaultConfig } from '@/app/lib/config';
 
+const configcacheProcessKey = Symbol.for('playwright.reports.configCache');
+
 export class ConfigCache {
-  private static instance: ConfigCache;
   public initialized = false;
   public config: SiteWhiteLabelConfig | undefined;
 
   private constructor() {}
 
   public static getInstance() {
-    if (!ConfigCache.instance) {
-      ConfigCache.instance = new ConfigCache();
+    const nodeJsProcess = process as typeof process & { [key: symbol]: ConfigCache | undefined };
+
+    if (!nodeJsProcess[configcacheProcessKey]) {
+      nodeJsProcess[configcacheProcessKey] = new ConfigCache();
     }
 
-    return ConfigCache.instance;
+    return nodeJsProcess[configcacheProcessKey]!;
   }
 
   public async init(): Promise<void> {

@@ -55,6 +55,7 @@ export interface ReadReportsInput {
   dateTo?: string;
   order?: SortOrder;
   sortBy?: 'createdAt' | 'title' | 'project' | 'passRate' | 'size';
+  lightweight?: boolean;
 }
 
 export interface ReadReportsOutput {

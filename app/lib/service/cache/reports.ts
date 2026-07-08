@@ -1,13 +1,16 @@
 import { withError } from '../../withError';
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 import { storage } from '@/app/lib/storage';
 import { type ReportHistory } from '@/app/lib/storage/types';
 import { env } from '@/app/config/env';
 
 type ReportsMap = Map<string, ReportHistory>;
 
+const reportcacheProcessKey = Symbol.for('playwright.reports.reportCache');
+
 export class ReportCache {
-  private static instance: ReportCache;
   public initialized = false;
   private readonly reports: ReportsMap;
 
@@ -16,11 +19,13 @@ export class ReportCache {
   }
 
   public static getInstance() {
-    if (!ReportCache.instance) {
-      ReportCache.instance = new ReportCache();
+    const nodeJsProcess = process as typeof process & { [key: symbol]: ReportCache | undefined };
+
+    if (!nodeJsProcess[reportcacheProcessKey]) {
+      nodeJsProcess[reportcacheProcessKey] = new ReportCache();
     }
 
-    return ReportCache.instance;
+    return nodeJsProcess[reportcacheProcessKey]!;
   }
 
   public async init() {
@@ -28,24 +33,35 @@ export class ReportCache {
       return;
     }
 
-    console.log('[report cache] initializing cache');
-    const { result, error } = await withError(storage.readReports());
+    const maxAttempts = 6;
+    const retryDelayMs = 10_000;
 
-    if (error) {
-      console.error('[report cache] failed to read reports:', error);
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      console.log(`[report cache] initializing cache (attempt ${attempt}/${maxAttempts})`);
+      const { result, error } = await withError(storage.readReports({ lightweight: true }));
 
+      if (error) {
+        console.error('[report cache] failed to read reports:', error);
+        if (attempt < maxAttempts) await sleep(retryDelayMs);
+        continue;
+      }
+
+      if (!result?.reports?.length) {
+        console.log('[report cache] no reports found yet');
+        if (attempt < maxAttempts) await sleep(retryDelayMs);
+        continue;
+      }
+
+      for (const report of result.reports) {
+        ReportCache.getInstance().reports.set(report.reportID, report);
+      }
+
+      this.initialized = true;
+      console.log(`[report cache] initialized with ${result.reports.length} reports`);
       return;
     }
 
-    if (!result?.reports?.length) {
-      return;
-    }
-
-    for (const report of result.reports) {
-      ReportCache.getInstance().reports.set(report.reportID, report);
-    }
-
-    this.initialized = true;
+    console.warn('[report cache] init finished without reports');
   }
 
   public onDeleted(reportIds: string[]) {

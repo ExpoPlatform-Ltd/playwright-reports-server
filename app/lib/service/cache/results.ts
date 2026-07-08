@@ -6,8 +6,9 @@ import { env } from '@/app/config/env';
 
 type ResultsMap = Map<string, Result>;
 
+const resultcacheProcessKey = Symbol.for('playwright.reports.resultCache');
+
 export class ResultCache {
-  private static instance: ResultCache;
   public initialized = false;
   private readonly results: ResultsMap;
 
@@ -16,11 +17,13 @@ export class ResultCache {
   }
 
   public static getInstance() {
-    if (!ResultCache.instance) {
-      ResultCache.instance = new ResultCache();
+    const nodeJsProcess = process as typeof process & { [key: symbol]: ResultCache | undefined };
+
+    if (!nodeJsProcess[resultcacheProcessKey]) {
+      nodeJsProcess[resultcacheProcessKey] = new ResultCache();
     }
 
-    return ResultCache.instance;
+    return nodeJsProcess[resultcacheProcessKey]!;
   }
 
   public async init() {
@@ -38,6 +41,8 @@ export class ResultCache {
     }
 
     if (!resultsResponse?.results?.length) {
+      this.initialized = true;
+      console.log('[result cache] initialized empty (no result metadata files)');
       return;
     }
 
