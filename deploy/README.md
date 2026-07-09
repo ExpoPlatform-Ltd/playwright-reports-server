@@ -1,15 +1,25 @@
 # ECS deploy (non-prod)
 
-Production-like deploy uses branch **`5.10.0-perf`** (upstream 5.10.0 + EFS cache fixes).
+Deploys **v6** (the current monorepo `main`) to the non-prod ECS service.
 
-**Do not merge `5.10.0-perf` into `main`.**  
-`main` is upstream v6 (new monorepo architecture); the branches have unrelated app code.
+Previously this pipeline built the `5.10.0-perf` branch (upstream 5.10 + EFS cache fixes).
+That branch is now obsolete: upstream's v6 refactor already contains the equivalent fix
+(process-global cache singleton) and replaced the in-memory report/result caches with a
+SQLite layer, so the pipeline builds v6 directly.
 
 ## Deploy
 
 GitHub → **Actions** → **Deploy to ECS (non-prod)** → **Run workflow** (on `main`).
 
-The workflow checks out `5.10.0-perf` and builds from that branch.
+The workflow checks out the dispatched ref, builds the v6 Docker image, pushes it to ECR,
+registers a new ECS task definition, and rolls out the service. On smoke-test failure it
+automatically rolls back to the previous task definition.
+
+### Port
+
+v6's image defaults to `PORT=3001`, but the deploy script pins the container's `PORT` env to
+whatever `containerPort` the **existing** task definition already declares, so v6 keeps
+listening on the port the target group expects (no target-group change needed).
 
 ## Secret
 
@@ -17,6 +27,7 @@ The workflow checks out `5.10.0-perf` and builds from that branch.
 |--------|-------|
 | `AWS_DEPLOY_ROLE_ARN` | `arn:aws:iam::933156343580:role/GitHubActionsPlaywrightReportsDeploy` |
 
-## Cache fixes
+## Smoke checks
 
-See branch `5.10.0-perf` — `app/lib/service/cache/*.ts`, `lifecycle.ts`, etc.
+`deploy/scripts/smoke-test.sh` — `GET /api/ping` returns HTTP 200 (v6 returns JSON
+`{"status":"ok"}`), and `GET /` returns 2xx/3xx.
