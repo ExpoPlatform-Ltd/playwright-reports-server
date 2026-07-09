@@ -1,6 +1,8 @@
 name: Deploy to ECS (non-prod)
 
-# Builds from branch 5.10.0-perf (5.10 + cache fixes). Do not merge that branch into main (v6).
+# Builds and deploys v6 (monorepo) from the ref this workflow is dispatched on
+# (main by default). The container port is derived from the existing ECS task
+# definition so v6 slots into the current target group without infra changes.
 on:
   workflow_dispatch:
 
@@ -10,8 +12,7 @@ permissions:
 
 env:
   AWS_REGION: eu-west-1
-  DEPLOY_REF: 5.10.0-perf
-  IMAGE_TAG: "5.10.0-perf3.2"
+  IMAGE_TAG: "6.0.0-${{ github.run_number }}"
   ECR_REPOSITORY: playwright-reports-server
   ECS_CLUSTER: playwright-reports-server-cluster
   ECS_SERVICE: playwright-reports-server
@@ -25,10 +26,8 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - name: Checkout deploy branch (5.10.0-perf)
+      - name: Checkout (v6 from the dispatched ref)
         uses: actions/checkout@v4
-        with:
-          ref: ${{ env.DEPLOY_REF }}
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -67,8 +66,9 @@ jobs:
           "${SCRIPTS}/ecs-deploy-image.sh"
 
           if ! "${SCRIPTS}/smoke-test.sh"; then
+            echo "::warning::smoke test failed on new task definition — rolling back to ${PREVIOUS_TD}"
             export TASK_DEFINITION_ARN="$PREVIOUS_TD"
             "${SCRIPTS}/ecs-rollback-service.sh"
-            "${SCRIPTS}/smoke-test.sh"
+            "${SCRIPTS}/smoke-test.sh" || echo "::error::rollback target also failed smoke test"
             exit 1
           fi
