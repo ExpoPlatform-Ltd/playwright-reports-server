@@ -60,6 +60,17 @@ echo "$CURRENT_TD" \
               | map(select(.name != "PORT"))
               + [{name: "PORT", value: ($cp | tostring)}]
             )
+          # v6 /api/ping returns JSON {"status":"ok"} — the old healthcheck grepped
+          # for "pong" and would fail forever. Replace it with a plain reachability
+          # check on the same port, and widen the start period for first-boot
+          # migrations / litestream.
+          | .healthCheck = {
+              command: ["CMD-SHELL", ("wget -qO- http://127.0.0.1:\($cp)/api/ping >/dev/null 2>&1 || exit 1")],
+              interval: (.healthCheck.interval // 30),
+              timeout: (.healthCheck.timeout // 5),
+              retries: (.healthCheck.retries // 3),
+              startPeriod: ([(.healthCheck.startPeriod // 0), 90] | max)
+            }
         else . end)' \
   > /tmp/playwright-reports-td.json
 
