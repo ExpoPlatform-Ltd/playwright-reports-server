@@ -69,7 +69,7 @@ echo "$CURRENT_TD" \
               interval: (.healthCheck.interval // 30),
               timeout: (.healthCheck.timeout // 5),
               retries: (.healthCheck.retries // 3),
-              startPeriod: ([(.healthCheck.startPeriod // 0), 90] | max)
+              startPeriod: ([(.healthCheck.startPeriod // 0), 300] | max)
             }
         else . end)' \
   > /tmp/playwright-reports-td.json
@@ -100,19 +100,46 @@ REV=$(echo "$OUT" | jq -r '.taskDefinition.revision')
 NEW_TD="${FAMILY}:${REV}"
 
 echo "==> Update service → ${NEW_TD}"
+# minimumHealthyPercent=0 / maximumPercent=100: stop the old task BEFORE starting
+# the new one, so two v6 tasks never open the same SQLite DB on the EFS mount
+# concurrently (would risk corruption). Trade-off: a brief blip during each deploy.
 aws ecs update-service \
   --cluster "$ECS_CLUSTER" \
   --service "$ECS_SERVICE" \
   --task-definition "$NEW_TD" \
   --force-new-deployment \
+  --deployment-configuration "minimumHealthyPercent=0,maximumPercent=100" \
   --region "$AWS_REGION" \
   --query 'service.serviceName' \
   --output text
 
-echo "==> Wait for stable rollout"
-aws ecs wait services-stable \
-  --cluster "$ECS_CLUSTER" \
-  --services "$ECS_SERVICE" \
-  --region "$AWS_REGION"
+# Custom stability wait: v6's first boot imports existing reports into SQLite on
+# EFS and can take longer than `aws ecs wait services-stable`'s fixed 10 min.
+WAIT_TIMEOUT="${WAIT_TIMEOUT:-1500}"
+echo "==> Wait for stable rollout (up to ${WAIT_TIMEOUT}s)"
+deadline=$(( $(date +%s) + WAIT_TIMEOUT ))
+while :; do
+  DESC=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+    --region "$AWS_REGION" --query 'services[0]' --output json)
+  NUMDEP=$(echo "$DESC" | jq '.deployments | length')
+  ROLLOUT=$(echo "$DESC" | jq -r '.deployments[] | select(.status=="PRIMARY") | .rolloutState // "UNKNOWN"')
+  RUN=$(echo "$DESC" | jq -r '.deployments[] | select(.status=="PRIMARY") | .runningCount')
+  DES=$(echo "$DESC" | jq -r '.deployments[] | select(.status=="PRIMARY") | .desiredCount')
+  FAILED=$(echo "$DESC" | jq -r '.deployments[] | select(.status=="PRIMARY") | .failedTasks')
+  echo "  deployments=${NUMDEP} primary rollout=${ROLLOUT} running=${RUN}/${DES} failed=${FAILED}"
+  if [ "$NUMDEP" = "1" ] && [ "$RUN" = "$DES" ] && [ "${DES:-0}" -gt 0 ]; then
+    echo "service stable on ${NEW_TD}"
+    break
+  fi
+  if [ "$ROLLOUT" = "FAILED" ]; then
+    echo "::error::ECS reported rolloutState=FAILED"
+    exit 1
+  fi
+  if [ "$(date +%s)" -ge "$deadline" ]; then
+    echo "::error::stability wait timed out after ${WAIT_TIMEOUT}s"
+    exit 1
+  fi
+  sleep 15
+done
 
 echo "task_definition=${NEW_TD}"
