@@ -1,8 +1,11 @@
 name: Deploy to ECS (non-prod)
 
 # Builds and deploys v6 (monorepo) from the ref this workflow is dispatched on
-# (main by default). The container port is derived from the existing ECS task
-# definition so v6 slots into the current target group without infra changes.
+# (main by default). Runs a quick diagnosis of the current service state first
+# (useful when a prior deploy is stuck), then builds/pushes/deploys. The
+# container port is derived from the existing ECS task definition so v6 slots
+# into the current target group without infra changes. On any deploy failure it
+# diagnoses and rolls back to the previously-running task definition.
 on:
   workflow_dispatch:
 
@@ -16,6 +19,8 @@ env:
   ECR_REPOSITORY: playwright-reports-server
   ECS_CLUSTER: playwright-reports-server-cluster
   ECS_SERVICE: playwright-reports-server
+  TD_FAMILY: playwright-reports-server
+  CONTAINER_NAME: reports
   APP_URL: https://playwright-reports.eu-west-1.ep-non-production.expoplatform.net
   AWS_ACCOUNT_ID: "933156343580"
 
@@ -44,6 +49,11 @@ jobs:
             exit 1
           fi
 
+      - name: Diagnose current service state (pre-deploy)
+        run: |
+          chmod +x deploy/scripts/*.sh
+          deploy/scripts/ecs-diagnose.sh || true
+
       - name: Build, push, deploy
         env:
           ECR_REGISTRY: ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
@@ -56,19 +66,26 @@ jobs:
           PREVIOUS_TD=$(aws ecs describe-services \
             --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" --region "$AWS_REGION" \
             --query 'services[0].taskDefinition' --output text)
+          echo "previous task definition: ${PREVIOUS_TD}"
 
           aws ecr get-login-password --region "$AWS_REGION" | \
             docker login --username AWS --password-stdin "$ECR_REGISTRY"
           docker build --platform linux/amd64 -t "$IMAGE_URI" .
           docker push "$IMAGE_URI"
 
-          export IMAGE_URI ECS_CLUSTER ECS_SERVICE AWS_REGION APP_URL
-          "${SCRIPTS}/ecs-deploy-image.sh"
+          export IMAGE_URI ECS_CLUSTER ECS_SERVICE AWS_REGION APP_URL TD_FAMILY CONTAINER_NAME
 
-          if ! "${SCRIPTS}/smoke-test.sh"; then
-            echo "::warning::smoke test failed on new task definition — rolling back to ${PREVIOUS_TD}"
+          ok=1
+          "${SCRIPTS}/ecs-deploy-image.sh" || ok=0
+          if [ "$ok" = 1 ]; then
+            "${SCRIPTS}/smoke-test.sh" || ok=0
+          fi
+
+          if [ "$ok" != 1 ]; then
+            echo "::warning::deploy failed — diagnosing, then rolling back to ${PREVIOUS_TD}"
+            "${SCRIPTS}/ecs-diagnose.sh" || true
             export TASK_DEFINITION_ARN="$PREVIOUS_TD"
-            "${SCRIPTS}/ecs-rollback-service.sh"
-            "${SCRIPTS}/smoke-test.sh" || echo "::error::rollback target also failed smoke test"
+            "${SCRIPTS}/ecs-rollback-service.sh" || echo "::error::rollback failed"
             exit 1
           fi
+          echo "deploy succeeded"
