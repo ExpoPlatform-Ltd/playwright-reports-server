@@ -31,6 +31,23 @@ LOG_PREFIX=$(aws ecs describe-task-definition --task-definition "$TD_FAMILY" --r
   --query "taskDefinition.containerDefinitions[?name=='${CONTAINER_NAME}'].logConfiguration.options.\"awslogs-stream-prefix\" | [0]" --output text 2>/dev/null || true)
 echo "log group: ${LOG_GROUP:-<unknown>}  stream-prefix: ${LOG_PREFIX:-<unknown>}"
 
+echo "===== current task def: container healthCheck / command / ports ====="
+aws ecs describe-task-definition --task-definition "$TD_FAMILY" --region "$AWS_REGION" \
+  --query "taskDefinition.containerDefinitions[?name=='${CONTAINER_NAME}'].{healthCheck:healthCheck,command:command,entryPoint:entryPoint,portMappings:portMappings,essential:essential} | [0]" \
+  --output json 2>&1 || true
+
+echo "===== most recent log stream in ${LOG_GROUP} (likely the failing v6 task) ====="
+if [ -n "${LOG_GROUP:-}" ] && [ "${LOG_GROUP}" != "None" ]; then
+  RECENT=$(aws logs describe-log-streams --log-group-name "$LOG_GROUP" --region "$AWS_REGION" \
+    --order-by LastEventTime --descending --limit 1 --query 'logStreams[0].logStreamName' --output text 2>/dev/null || true)
+  echo "recent stream: ${RECENT:-<none>}"
+  if [ -n "${RECENT:-}" ] && [ "${RECENT}" != "None" ]; then
+    aws logs get-log-events --log-group-name "$LOG_GROUP" --log-stream-name "$RECENT" \
+      --region "$AWS_REGION" --limit 200 --start-from-head --query 'events[].message' --output text 2>&1 \
+      | tail -200 || echo "(could not read logs — role may lack logs:GetLogEvents)"
+  fi
+fi
+
 for T in $STOPPED; do
   echo "----- stopped task $T -----"
   aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$T" --region "$AWS_REGION" \
