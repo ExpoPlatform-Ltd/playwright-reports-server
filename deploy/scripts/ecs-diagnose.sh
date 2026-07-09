@@ -36,6 +36,25 @@ aws ecs describe-task-definition --task-definition "$TD_FAMILY" --region "$AWS_R
   --query "taskDefinition.containerDefinitions[?name=='${CONTAINER_NAME}'].{healthCheck:healthCheck,command:command,entryPoint:entryPoint,portMappings:portMappings,essential:essential} | [0]" \
   --output json 2>&1 || true
 
+echo "===== reports container environment (non-secret values) ====="
+aws ecs describe-task-definition --task-definition "$TD_FAMILY" --region "$AWS_REGION" \
+  --query "taskDefinition.containerDefinitions[?name=='${CONTAINER_NAME}'].environment | [0]" --output json 2>&1 || true
+
+echo "===== logs by recent task-ids parsed from service events ====="
+TASK_IDS=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" --region "$AWS_REGION" \
+  --query 'services[0].events[:40].message' --output text 2>/dev/null \
+  | grep -oE 'task [0-9a-f]{32}' | grep -oE '[0-9a-f]{32}' | awk '!seen[$0]++' | head -4 || true)
+echo "task ids: ${TASK_IDS:-<none>}"
+if [ -n "${LOG_GROUP:-}" ] && [ "${LOG_GROUP}" != "None" ] && [ -n "${LOG_PREFIX:-}" ] && [ "${LOG_PREFIX}" != "None" ]; then
+  for TID in $TASK_IDS; do
+    STREAM="${LOG_PREFIX}/${CONTAINER_NAME}/${TID}"
+    echo "--- logs: ${LOG_GROUP} / ${STREAM} ---"
+    aws logs get-log-events --log-group-name "$LOG_GROUP" --log-stream-name "$STREAM" \
+      --region "$AWS_REGION" --limit 100 --start-from-head --query 'events[].message' --output text 2>&1 \
+      | tail -100 || echo "(could not read logs — role may lack logs:GetLogEvents)"
+  done
+fi
+
 echo "===== most recent log stream in ${LOG_GROUP} (likely the failing v6 task) ====="
 if [ -n "${LOG_GROUP:-}" ] && [ "${LOG_GROUP}" != "None" ]; then
   RECENT=$(aws logs describe-log-streams --log-group-name "$LOG_GROUP" --region "$AWS_REGION" \
