@@ -77,6 +77,9 @@ jobs:
           ECR_REGISTRY: ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
           IMAGE_URI: ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
           SCRIPTS: ${{ github.workspace }}/deploy/scripts
+          # Optional: a `view`-capable API key so smoke-test.sh can verify DB health
+          # (catches SQLITE_CORRUPT). Empty if the secret is unset → smoke warns & skips.
+          SMOKE_API_TOKEN: ${{ secrets.SMOKE_API_TOKEN }}
         run: |
           set -euo pipefail
           chmod +x "${SCRIPTS}"/*.sh
@@ -91,7 +94,7 @@ jobs:
           docker build --platform linux/amd64 -t "$IMAGE_URI" .
           docker push "$IMAGE_URI"
 
-          export IMAGE_URI ECS_CLUSTER ECS_SERVICE AWS_REGION APP_URL TD_FAMILY CONTAINER_NAME
+          export IMAGE_URI ECS_CLUSTER ECS_SERVICE AWS_REGION APP_URL TD_FAMILY CONTAINER_NAME SMOKE_API_TOKEN
 
           ok=1
           "${SCRIPTS}/ecs-deploy-image.sh" || ok=0
