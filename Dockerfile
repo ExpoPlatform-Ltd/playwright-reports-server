@@ -104,6 +104,9 @@ WORKDIR /app
 RUN addgroup --system --gid 1001 nodejs && \
     adduser --system --uid 1001 --ingroup nodejs appuser
 
+# sqlite3 CLI for offline metadata.db recovery (ecs-recover-db.sh one-off task).
+RUN apk add --no-cache sqlite
+
 # Bundled backend and its package.json so node treats the bundle as ESM
 COPY --from=backend-bundler --chown=appuser:nodejs /app/apps/backend/dist ./apps/backend/dist
 COPY --from=backend-bundler --chown=appuser:nodejs /app/apps/backend/package.json ./apps/backend/package.json

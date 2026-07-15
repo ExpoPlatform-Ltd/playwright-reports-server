@@ -58,9 +58,9 @@ aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" \
   --desired-count 0 --region "$AWS_REGION" >/dev/null
 aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" --region "$AWS_REGION"
 
-# Container-side repair. Runs in the app image (Alpine) which lacks a sqlite3 CLI, so it
-# installs one. Exit codes: 3 = no DB, 4 = unrecoverable (no clean DB — NOT swapped),
-# 5 = sqlite install failed (task needs egress to the apk repos).
+# Container-side repair. Expects sqlite3 in the runtime image (Dockerfile: apk add sqlite).
+# Exit codes: 3 = no DB, 4 = unrecoverable (no clean DB — NOT swapped),
+# 5 = sqlite3 CLI missing (redeploy image with Dockerfile sqlite package).
 read -r -d '' REPAIR <<'SH' || true
 set -e
 DIR=/app/data
@@ -69,8 +69,10 @@ if [ ! -f metadata.db ]; then echo "[recover] no metadata.db at $DIR — nothing
 STAMP=$(date +%s)
 echo "[recover] backing up -> metadata.db.corrupt.$STAMP"
 cp metadata.db "metadata.db.corrupt.$STAMP"
-echo "[recover] installing sqlite CLI"
-apk add --no-cache sqlite >/dev/null 2>&1 || { echo "[recover] apk add sqlite failed (no egress to apk repos?)"; exit 5; }
+if ! command -v sqlite3 >/dev/null 2>&1; then
+  echo "[recover] sqlite3 CLI not found — redeploy image with sqlite in Dockerfile"
+  exit 5
+fi
 echo "[recover] integrity_check (original, informational):"
 sqlite3 metadata.db "PRAGMA integrity_check;" 2>&1 | head -3 || true
 echo "[recover] running .recover into metadata.recovered.db"
