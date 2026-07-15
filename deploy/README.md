@@ -41,7 +41,7 @@ then corruption fails the deploy (and rolls back) instead of shipping silently g
 ## Troubleshooting
 
 **`SQLITE_CORRUPT` / "database disk image is malformed" on report/result endpoints** — the
-metadata DB is corrupt. A plain redeploy will NOT fix it (boot only restores from S3 when the
-local DB is absent, so the corrupt file must be removed on the EFS mount first). Recovery
-steps live in the team's internal DB-corruption recovery runbook (kept out of this public
-repo) — ask #devops.
+metadata DB is corrupt. A plain redeploy will NOT fix it, and the safe recovery depends on the
+storage backend (with no off-box replica, deleting the DB loses the index — preserve and repair
+it instead). Doing this wrong can lose data. Follow the team's internal DB-corruption recovery
+runbook (kept out of this public repo) — ask #devops.
