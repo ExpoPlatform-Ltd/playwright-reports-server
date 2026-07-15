@@ -1,21 +1,29 @@
 name: Deploy to ECS (non-prod)
 
 # Builds and deploys v6 (monorepo) from the dispatched ref. Modes:
-#   deploy   - build/push/deploy v6, roll back on failure (default)
-#   diagnose - only dump current service state / task logs (no build)
-#   rollback - roll the service back to a task-definition revision
+#   deploy     - build/push/deploy v6, roll back on failure (default)
+#   diagnose   - only dump current service state / task logs (no build)
+#   rollback   - roll the service back to a task-definition revision
+#   recover-db - repair a corrupt SQLite metadata.db on the EFS volume (no build).
+#                Scales the service to 0, runs a one-off task that backs up + .recover's
+#                the DB and swaps it in ONLY if it verifies clean, then scales back and
+#                smoke-checks. Requires inputs.confirm == "recover". See deploy/README.md.
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "deploy | diagnose | rollback"
+        description: "deploy | diagnose | rollback | recover-db"
         type: choice
-        options: [deploy, diagnose, rollback]
+        options: [deploy, diagnose, rollback, recover-db]
         default: deploy
       rollback_to:
         description: "rollback mode: task-definition revision to roll back to"
         required: false
         default: "16"
+      confirm:
+        description: 'recover-db mode: type "recover" to confirm (brief downtime + DB surgery)'
+        required: false
+        default: ""
 
 permissions:
   id-token: write
@@ -71,12 +79,33 @@ jobs:
           export ECS_CLUSTER ECS_SERVICE AWS_REGION
           deploy/scripts/ecs-rollback-service.sh
 
+      - name: Recover DB (SQLite metadata)
+        if: ${{ github.event.inputs.mode == 'recover-db' }}
+        env:
+          SCRIPTS: ${{ github.workspace }}/deploy/scripts
+          SMOKE_API_TOKEN: ${{ secrets.SMOKE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event.inputs.confirm }}" != "recover" ]; then
+            echo "::error::recover-db requires the 'confirm' input to be exactly: recover (guards against accidental runs — this scales the service to 0 and edits the metadata DB)"
+            exit 1
+          fi
+          chmod +x "${SCRIPTS}"/*.sh
+          export ECS_CLUSTER ECS_SERVICE AWS_REGION CONTAINER_NAME TD_FAMILY
+          "${SCRIPTS}/ecs-recover-db.sh"
+          echo "==> Post-recovery smoke check"
+          export APP_URL SMOKE_API_TOKEN
+          "${SCRIPTS}/smoke-test.sh"
+
       - name: Build, push, deploy
         if: ${{ github.event.inputs.mode == 'deploy' }}
         env:
           ECR_REGISTRY: ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
           IMAGE_URI: ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
           SCRIPTS: ${{ github.workspace }}/deploy/scripts
+          # Optional: a `view`-capable API key so smoke-test.sh can verify DB health
+          # (catches SQLITE_CORRUPT). Empty if the secret is unset → smoke warns & skips.
+          SMOKE_API_TOKEN: ${{ secrets.SMOKE_API_TOKEN }}
         run: |
           set -euo pipefail
           chmod +x "${SCRIPTS}"/*.sh
@@ -91,7 +120,7 @@ jobs:
           docker build --platform linux/amd64 -t "$IMAGE_URI" .
           docker push "$IMAGE_URI"
 
-          export IMAGE_URI ECS_CLUSTER ECS_SERVICE AWS_REGION APP_URL TD_FAMILY CONTAINER_NAME
+          export IMAGE_URI ECS_CLUSTER ECS_SERVICE AWS_REGION APP_URL TD_FAMILY CONTAINER_NAME SMOKE_API_TOKEN
 
           ok=1
           "${SCRIPTS}/ecs-deploy-image.sh" || ok=0
